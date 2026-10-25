@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <errno.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <math.h>
 
@@ -170,7 +172,6 @@ void next_token(Parser *p)
             p->index++;
         }
 
-        // Check if it is a float (digits.digits)
         if (p->index < p->length && p->text[p->index] == '.')
         {
             size_t dot_pos = p->index + 1;
@@ -210,7 +211,6 @@ void next_token(Parser *p)
         }
         else
         {
-            // Integer (long long)
             long long val = 0;
             for (size_t i = num_start; i < p->index; i++)
             {
@@ -229,5 +229,89 @@ void next_token(Parser *p)
     p->current.type = TOK_INVALID;
     p->current.pos = start_pos;
 }
+
+
+void set_error(Parser *p, size_t pos) {
+    if (p->err_pos == 0) {
+        p->err_pos = pos;
+    }
+}
+
+
+
+
+
+double to_double(Value v) {
+    if (v.is_float) {
+        return v.f_val;
+    }
+    return (double)v.i_val;
+}
+
+
+
+long long calc_int_pow(long long base, long long exp) {
+    long long res = 1;
+    while (exp > 0) {
+        if (exp % 2 == 1) {
+            res *= base;
+        }
+        base *= base;
+        exp /= 2;
+    }
+    return res;
+}
+
+
+
+Value parse_primary(Parser *p) {
+    Value v = {0, 0, 0.0, p->current.pos};
+    if (p->err_pos != 0) return v;
+
+    if (p->current.type == TOK_INT) {
+        v.is_float = 0;
+        v.i_val = p->current.int_val;
+        v.start_pos = p->current.pos;
+        next_token(p);
+        return v;
+    }
+
+    if (p->current.type == TOK_FLOAT) {
+        if (!isfinite(p->current.float_val)) {
+            set_error(p, p->current.pos);
+            return v;
+        }
+        v.is_float = 1;
+        v.f_val = p->current.float_val;
+        v.start_pos = p->current.pos;
+        next_token(p);
+        return v;
+    }
+
+    if (p->current.type == TOK_LPAREN) {
+        size_t open_pos = p->current.pos;
+        next_token(p); 
+
+        Value inside = parse_expr(p);
+        if (p->err_pos != 0) return inside;
+
+        
+        if (p->current.type != TOK_RPAREN) {
+            set_error(p, p->current.pos);
+            return inside;
+        }
+        next_token(p); 
+        inside.start_pos = open_pos;
+        return inside;
+    }
+
+   
+    set_error(p, p->current.pos);
+    return v;
+}
+
+
+
+
 
 
