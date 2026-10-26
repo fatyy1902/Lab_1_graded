@@ -1,124 +1,198 @@
 // GUEYE Sokhna Faty 260ADB182
-// (optional) https://github.com/<your-username>/calc-lab-home
+// https://github.com/fatyy1902/Lab_1_graded
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
-// Resources used: <every AI tool, website and book you used; details in comments where you used them>
+// Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives); man pages of mkdir, stat, opendir, snprintf, fseek, strtod, pow
+
+// The tokenizer part (skip() and the reading of numbers and
+//   operators) was written by Claude. I read it and I can explain it.
 
 #include <ctype.h>
 #include <dirent.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
-
 #define NAME "Sokhna"
 #define LASTNAME "GUEYE"
 #define ID "260ADB182"
-#define PATH_SIZE 1024 // size of every path buffer (course, "Always reserve enough space in buffers")
-
 
 enum Result { RES_OK = 0, RES_FAIL = 1 };
 
-
+// Positions: the whole file is one string and p walks along it, so position = (p - text) + 1.
+// Comments, blank lines and every '\n' are in that string, so they are counted automatically.
 typedef struct {
-    const char *text; 
-    const char *p;    
-    size_t err;      
+    char *text;
+    char *p;
+    size_t err; // position of the first error, 0 = no error
 } Parser;
 
-// Only the FIRST error counts, hence the `if (!ps->err)`.
+// Integer if both operands are integers, otherwise both become double.
+typedef struct {
+    int is_float;
+    long long i;
+    double d;
+} Value;
+
+static Value int_value(long long i) {
+    Value v = {0, i, 0.0};
+    return v;
+}
+
+static Value float_value(double d) {
+    Value v = {1, 0, d};
+    return v;
+}
+
+static double as_double(Value v) {
+    return v.is_float ? v.d : (double)v.i;
+}
+
+// Only the first error is kept.
 static void fail_at(Parser *ps, const char *where) {
     if (!ps->err) ps->err = (size_t)(where - ps->text) + 1;
 }
 
-// Skip space between token
+// Tokenizer (AI). '\n' is not skipped: it ends the expression, so a missing operand
+// or a missing ')' is reported on it.
 static void skip(Parser *ps) {
     while (*ps->p == ' ' || *ps->p == '\t') ps->p++;
 }
 
-// Recursive descent, one function per precedence level:
+// op is + - * / or '^' (for **). Division by zero and a negative integer exponent are reported at
+// the right operand (the wrong part). A float result that is infinite or not a number is reported
+// at the operator, because no single operand is wrong.
+static Value arith(Parser *ps, char op, Value a, Value b, const char *op_at, const char *rhs_at) {
+    if (!a.is_float && !b.is_float) {
+        switch (op) {
+        case '+': return int_value(a.i + b.i);
+        case '-': return int_value(a.i - b.i);
+        case '*': return int_value(a.i * b.i);
+        case '/':
+            if (b.i == 0) {
+                fail_at(ps, rhs_at);
+                return int_value(0);
+            }
+            return int_value(a.i / b.i);
+        default: {
+            if (b.i < 0) {
+                fail_at(ps, rhs_at);
+                return int_value(0);
+            }
+            unsigned long long r = 1, x = (unsigned long long)a.i; // unsigned: no overflow problem
+            for (long long e = b.i; e > 0; e >>= 1) {
+                if (e & 1) r *= x;
+                x *= x;
+            }
+            return int_value((long long)r);
+        }
+        }
+    }
+
+    double x = as_double(a), y = as_double(b), r;
+    if (op == '+') r = x + y;
+    else if (op == '-') r = x - y;
+    else if (op == '*') r = x * y;
+    else if (op == '/') {
+        if (y == 0.0) {
+            fail_at(ps, rhs_at);
+            return float_value(0.0);
+        }
+        r = x / y;
+    } else {
+        r = pow(x, y);
+    }
+    if (!isfinite(r)) {
+        fail_at(ps, op_at);
+        return float_value(0.0);
+    }
+    return float_value(r);
+}
+
+// Precedence: expr is made of terms and a term is made of powers,
+// so ** is done first, then * and /, then + and -.
 //   expr    := term  { ('+' | '-') term }
 //   term    := power { ('*' | '/') power }
 //   power   := primary [ '**' power ]
 //   primary := NUMBER | '(' expr ')'
-static long long expr(Parser *ps);
+static Value expr(Parser *ps);
 
-static long long primary(Parser *ps) {
+// Tokenizer (AI). An operand is expected here, so every "missing operand" error is reported at
+// this token. A float needs digits on both sides of the '.', so "5." and ".5" fail at the '.'.
+static Value primary(Parser *ps) {
     skip(ps);
     if (isdigit((unsigned char)*ps->p)) {
-        long long v = 0;
-        while (isdigit((unsigned char)*ps->p)) v = v * 10 + (*ps->p++ - '0');
-        return v;
+        char *start = ps->p;
+        unsigned long long u = 0;
+        while (isdigit((unsigned char)*ps->p)) u = u * 10 + (unsigned long long)(*ps->p++ - '0');
+        if (ps->p[0] == '.' && isdigit((unsigned char)ps->p[1])) {
+            ps->p++;
+            while (isdigit((unsigned char)*ps->p)) ps->p++;
+            char saved = *ps->p; // strtod needs a '\0' after the number: put one there, no copy
+            *ps->p = '\0';
+            double d = strtod(start, NULL);
+            *ps->p = saved;
+            return float_value(d);
+        }
+        return int_value((long long)u);
     }
     if (*ps->p == '(') {
         ps->p++;
-        long long v = expr(ps);
+        Value v = expr(ps);
         skip(ps);
-        if (!ps->err && *ps->p != ')') fail_at(ps, ps->p); 
+        if (!ps->err && *ps->p != ')') fail_at(ps, ps->p);
         if (!ps->err) ps->p++;
         return v;
     }
-    fail_at(ps, ps->p); 
-    return 0;
+    fail_at(ps, ps->p);
+    return int_value(0);
 }
 
-static long long power(Parser *ps) {
-    long long a = primary(ps);
+// power() calls itself for the exponent: 2 ** 3 ** 2 is 2 ** (3 ** 2), so ** is right-associative.
+static Value power(Parser *ps) {
+    Value a = primary(ps);
     skip(ps);
     if (ps->err || ps->p[0] != '*' || ps->p[1] != '*') return a;
+    const char *op_at = ps->p;
     ps->p += 2;
     skip(ps);
-    const char *at = ps->p; 
-   
-    long long b = power(ps);
-    if (ps->err) return 0;
-    if (b < 0) {
-        fail_at(ps, at);
-        return 0;
-    }
-   
-    unsigned long long r = 1, x = (unsigned long long)a;
-    for (; b > 0; b >>= 1) {
-        if (b & 1) r *= x;
-        x *= x;
-    }
-    return (long long)r;
+    const char *rhs_at = ps->p;
+    Value b = power(ps);
+    if (ps->err) return int_value(0);
+    return arith(ps, '^', a, b, op_at, rhs_at);
 }
 
-
-static long long term(Parser *ps) {
-    long long a = power(ps);
+// The loops are left-associative: 8 / 2 / 2 is (8 / 2) / 2.
+static Value term(Parser *ps) {
+    Value a = power(ps);
     for (;;) {
         skip(ps);
         if (ps->err || (*ps->p != '*' && *ps->p != '/')) return a;
+        const char *op_at = ps->p;
         char op = *ps->p++;
         skip(ps);
-        const char *at = ps->p;
-        long long b = power(ps);
-        if (ps->err) return 0;
-        if (op == '*') {
-            a *= b;
-        } else if (b == 0) { 
-            fail_at(ps, at);
-            return 0;
-        } else {
-            a /= b; 
-        }
+        const char *rhs_at = ps->p;
+        Value b = power(ps);
+        if (ps->err) return int_value(0);
+        a = arith(ps, op, a, b, op_at, rhs_at);
     }
 }
 
-static long long expr(Parser *ps) {
-    long long a = term(ps);
+static Value expr(Parser *ps) {
+    Value a = term(ps);
     for (;;) {
         skip(ps);
         if (ps->err || (*ps->p != '+' && *ps->p != '-')) return a;
+        const char *op_at = ps->p;
         char op = *ps->p++;
-        long long b = term(ps);
-        if (ps->err) return 0;
-        a = (op == '+') ? a + b : a - b;
+        skip(ps);
+        const char *rhs_at = ps->p;
+        Value b = term(ps);
+        if (ps->err) return int_value(0);
+        a = arith(ps, op, a, b, op_at, rhs_at);
     }
 }
-
 
 static int make_folder(const char *folder) {
     struct stat st;
@@ -129,7 +203,6 @@ static int make_folder(const char *folder) {
     }
     return RES_OK;
 }
-
 
 static int process(const char *inpath, const char *base, const char *outdir) {
     FILE *f = fopen(inpath, "rb");
@@ -143,7 +216,8 @@ static int process(const char *inpath, const char *base, const char *outdir) {
         fclose(f);
         return RES_FAIL;
     }
-   
+
+    // Large files: the file is read once into one buffer and parsed there, with no copy per line.
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     rewind(f);
@@ -163,23 +237,23 @@ static int process(const char *inpath, const char *base, const char *outdir) {
     }
     buf[n] = '\0';
 
-    
-    long long *res = NULL;
+    // Results are kept until the end: after an error only the ERROR line must be written.
+    // The array doubles when full, so it is not copied for every result.
+    Value *res = NULL;
     size_t count = 0, cap = 0;
     Parser ps = {buf, buf, 0};
     while (*ps.p && !ps.err) {
         skip(&ps);
-        if (*ps.p == '\n') { ps.p++; continue; }                             
-        if (*ps.p == '#') { while (*ps.p && *ps.p != '\n') ps.p++; continue; } 
-        if (*ps.p == '\0') break;                                            
-        long long v = expr(&ps);
+        if (*ps.p == '\n') { ps.p++; continue; }
+        if (*ps.p == '#') { while (*ps.p && *ps.p != '\n') ps.p++; continue; } // only a FIRST '#' is a comment
+        if (*ps.p == '\0') break;
+        Value v = expr(&ps);
         skip(&ps);
-        
-        if (!ps.err && *ps.p != '\n' && *ps.p != '\0') fail_at(&ps, ps.p);
+        if (!ps.err && *ps.p != '\n' && *ps.p != '\0') fail_at(&ps, ps.p); // leftover: extra ')', '#', "2 3"
         if (ps.err) break;
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 1024;
-            long long *temp = realloc(res, new_cap * sizeof *res);
+            Value *temp = realloc(res, new_cap * sizeof *res);
             if (temp == NULL) {
                 fprintf(stderr, "calc: out of memory\n");
                 free(res);
@@ -193,17 +267,22 @@ static int process(const char *inpath, const char *base, const char *outdir) {
         if (*ps.p == '\n') ps.p++;
     }
 
-    
     int rc = RES_FAIL;
-    char path[PATH_SIZE];
+    char path[1024];
     snprintf(path, sizeof path, "%s/%s_%s_%s_%s.txt", outdir, base, NAME, LASTNAME, ID);
     if (make_folder(outdir) == RES_OK) {
         FILE *o = fopen(path, "w");
         if (o == NULL) {
             perror(path);
         } else {
-            if (ps.err) fprintf(o, "ERROR:%zu\n", ps.err);
-            else for (size_t i = 0; i < count; i++) fprintf(o, "%lld\n", res[i]);
+            if (ps.err) {
+                fprintf(o, "ERROR:%zu\n", ps.err);
+            } else {
+                for (size_t i = 0; i < count; i++) {
+                    if (res[i].is_float) fprintf(o, "%.15g\n", res[i].d);
+                    else fprintf(o, "%lld\n", res[i].i);
+                }
+            }
             if (fclose(o) != 0) fprintf(stderr, "calc: error writing %s\n", path);
             else rc = RES_OK;
         }
@@ -213,9 +292,9 @@ static int process(const char *inpath, const char *base, const char *outdir) {
     return rc;
 }
 
-
+// Last part of the path, without ".txt" and without a final '/'.
 static void base_name(const char *path, char *out, size_t size) {
-    char tmp[PATH_SIZE];
+    char tmp[1024];
     snprintf(tmp, sizeof tmp, "%s", path);
     size_t n = strlen(tmp);
     while (n > 1 && tmp[n - 1] == '/') tmp[--n] = '\0';
@@ -229,7 +308,6 @@ static int usage(void) {
     fprintf(stderr, "usage: calc [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n");
     return RES_FAIL;
 }
-
 
 int main(int argc, char *argv[]) {
     const char *dir = NULL, *outdir = NULL, *input = NULL;
@@ -254,12 +332,11 @@ int main(int argc, char *argv[]) {
             input = argv[i];
         }
     }
-    
-    if ((dir == NULL) == (input == NULL)) return usage();
+    if ((dir == NULL) == (input == NULL)) return usage(); // exactly one of: input file, -d DIR
 
-    char base[256], default_out[PATH_SIZE];
+    char base[256], default_out[1024];
     base_name(dir ? dir : input, base, sizeof base);
-    if (outdir == NULL) { // default output folder: <base>_<name>_<id>
+    if (outdir == NULL) {
         snprintf(default_out, sizeof default_out, "%s_%s_%s", base, NAME, ID);
         outdir = default_out;
     }
@@ -274,14 +351,13 @@ int main(int argc, char *argv[]) {
     int rc = RES_OK;
     struct dirent *entry;
     while ((entry = readdir(d)) != NULL) {
-        
         size_t n = strlen(entry->d_name);
         if (n <= 4 || strcmp(entry->d_name + n - 4, ".txt") != 0) continue;
-        char full[PATH_SIZE];
+        char full[1024];
         snprintf(full, sizeof full, "%s/%s", dir, entry->d_name);
         struct stat st;
-        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) continue; // subfolders are ignored
-        char file_base[PATH_SIZE];
+        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) continue; // ignore subfolders
+        char file_base[1024];
         base_name(full, file_base, sizeof file_base);
         if (process(full, file_base, outdir) != RES_OK) rc = RES_FAIL;
     }
