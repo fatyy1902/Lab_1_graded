@@ -1,7 +1,7 @@
 // GUEYE Sokhna Faty 260ADB182
 // https://github.com/fatyy1902/Lab_1_graded
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
-// Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives); man pages of mkdir, stat, opendir, snprintf, fseek, strtod, pow
+// Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives)
 
 // The tokenizer part (skip() and the reading of numbers and   operators) was written by Chqt gpt. I read it and I can explain it.
 
@@ -45,7 +45,7 @@ typedef struct {
 typedef struct {
     TokenKind kind;
     char *start;
-    Value val; // only for T_NUM
+    Value val; 
 } Token;
 
 // Positions: the whole file is one string and p walks along it, so position = (start - text) + 1.
