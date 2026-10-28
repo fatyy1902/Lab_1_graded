@@ -3,7 +3,7 @@
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 // Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives)
 
-// The tokenizer part (skip() and the reading of numbers and   operators) was written by Chqt gpt. I read it and I can explain it.
+// The tokenizer part was written by Chat gpt.
 
 #include <ctype.h>
 #include <dirent.h>
