@@ -3,8 +3,7 @@
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 // Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives); man pages of mkdir, stat, opendir, snprintf, fseek, strtod, pow
 
-// The tokenizer part (skip() and the reading of numbers and
-//   operators) was written by Claude. I read it and I can explain it.
+// The tokenizer part (skip() and the reading of numbers and   operators) was written by Claude. I read it and I can explain it.
 
 #include <ctype.h>
 #include <dirent.h>
@@ -20,20 +19,45 @@
 
 enum Result { RES_OK = 0, RES_FAIL = 1 };
 
-// Positions: the whole file is one string and p walks along it, so position = (p - text) + 1.
-// Comments, blank lines and every '\n' are in that string, so they are counted automatically.
-typedef struct {
-    char *text;
-    char *p;
-    size_t err; // position of the first error, 0 = no error
-} Parser;
+// Course: enum. Each kind of token has a name, so the parser compares kinds instead of characters.
+typedef enum {
+    T_NUM,   // a number
+    T_PLUS,  // +
+    T_MINUS, // -
+    T_MUL,   // *
+    T_DIV,   // /
+    T_POW,   // **
+    T_LP,    // (
+    T_RP,    // )
+    T_HASH,  // #  (a comment if it is the first token of the line, an error anywhere else)
+    T_END,   // end of the line ('\n') or of the file
+    T_BAD    // any other character
+} TokenKind;
 
-// Integer if both operands are integers, otherwise both become double.
+// Integer if both operands are integers, otherwise both become double (7 / 2 is 3, 7 / 2.0 is 3.5).
 typedef struct {
     int is_float;
     long long i;
     double d;
 } Value;
+
+// start points to the first character of the token in the file. Errors are reported at start, because
+// the error position is "the start of the token the parser was looking at".
+typedef struct {
+    TokenKind kind;
+    char *start;
+    Value val; // only for T_NUM
+} Token;
+
+// Positions: the whole file is one string and p walks along it, so position = (start - text) + 1.
+// Comments, blank lines and every '\n' are in that string, so they are counted automatically.
+// tok is the token the parser is looking at (one token of lookahead).
+typedef struct {
+    char *text;
+    char *p;
+    Token tok;
+    size_t err; // position of the first error, 0 = no error
+} Parser;
 
 static Value int_value(long long i) {
     Value v = {0, i, 0.0};
@@ -54,22 +78,70 @@ static void fail_at(Parser *ps, const char *where) {
     if (!ps->err) ps->err = (size_t)(where - ps->text) + 1;
 }
 
-// Tokenizer (AI). '\n' is not skipped: it ends the expression, so a missing operand
-// or a missing ')' is reported on it.
-static void skip(Parser *ps) {
+// Tokenizer (AI): reads the next token into ps->tok. It never reports an error itself: a wrong
+// character becomes T_BAD, and the parser reports it when it cannot accept it. This way errors stay
+// in left-to-right order (in "10 / 0 &" the division by zero comes before the '&').
+// '\n' is not skipped: it is T_END, so a missing operand or a missing ')' is reported on it.
+static void next_token(Parser *ps) {
     while (*ps->p == ' ' || *ps->p == '\t') ps->p++;
+    Token *t = &ps->tok;
+    t->start = ps->p;
+    t->val = int_value(0);
+    char c = *ps->p;
+
+    if (c == '\0' || c == '\n') {
+        t->kind = T_END;
+        return;
+    }
+    if (isdigit((unsigned char)c)) {
+        unsigned long long u = 0; // unsigned: overflow is defined, signed overflow is not
+        while (isdigit((unsigned char)*ps->p)) u = u * 10 + (unsigned long long)(*ps->p++ - '0');
+        t->val = int_value((long long)u);
+        // A float is digits, a '.', then digits. So "5." and ".5" stop before the '.', which is then
+        // a T_BAD token (error at the '.'), and "1.5e3" stops before the 'e'.
+        if (ps->p[0] == '.' && isdigit((unsigned char)ps->p[1])) {
+            ps->p++;
+            while (isdigit((unsigned char)*ps->p)) ps->p++;
+            char saved = *ps->p; // strtod needs a '\0' after the number: put one there, no copy
+            *ps->p = '\0';
+            t->val = float_value(strtod(t->start, NULL));
+            *ps->p = saved;
+        }
+        t->kind = T_NUM;
+        return;
+    }
+
+    ps->p++;
+    switch (c) {
+    case '+': t->kind = T_PLUS; break;
+    case '-': t->kind = T_MINUS; break;
+    case '/': t->kind = T_DIV; break;
+    case '(': t->kind = T_LP; break;
+    case ')': t->kind = T_RP; break;
+    case '#': t->kind = T_HASH; break;
+    case '*':
+        // "**" is one token, so "2 ** 3" is never read as "2 * * 3".
+        if (*ps->p == '*') {
+            ps->p++;
+            t->kind = T_POW;
+        } else {
+            t->kind = T_MUL;
+        }
+        break;
+    default: t->kind = T_BAD; break;
+    }
 }
 
-// op is + - * / or '^' (for **). Division by zero and a negative integer exponent are reported at
-// the right operand (the wrong part). A float result that is infinite or not a number is reported
-// at the operator, because no single operand is wrong.
-static Value arith(Parser *ps, char op, Value a, Value b, const char *op_at, const char *rhs_at) {
+// op is T_PLUS, T_MINUS, T_MUL, T_DIV or T_POW. Division by zero and a negative integer exponent are
+// reported at the right operand (the wrong part). A float result that is infinite or not a number
+// is reported at the operator, because no single operand is wrong.
+static Value arith(Parser *ps, TokenKind op, Value a, Value b, const char *op_at, const char *rhs_at) {
     if (!a.is_float && !b.is_float) {
         switch (op) {
-        case '+': return int_value(a.i + b.i);
-        case '-': return int_value(a.i - b.i);
-        case '*': return int_value(a.i * b.i);
-        case '/':
+        case T_PLUS: return int_value(a.i + b.i);
+        case T_MINUS: return int_value(a.i - b.i);
+        case T_MUL: return int_value(a.i * b.i);
+        case T_DIV:
             if (b.i == 0) {
                 fail_at(ps, rhs_at);
                 return int_value(0);
@@ -91,10 +163,10 @@ static Value arith(Parser *ps, char op, Value a, Value b, const char *op_at, con
     }
 
     double x = as_double(a), y = as_double(b), r;
-    if (op == '+') r = x + y;
-    else if (op == '-') r = x - y;
-    else if (op == '*') r = x * y;
-    else if (op == '/') {
+    if (op == T_PLUS) r = x + y;
+    else if (op == T_MINUS) r = x - y;
+    else if (op == T_MUL) r = x * y;
+    else if (op == T_DIV) {
         if (y == 0.0) {
             fail_at(ps, rhs_at);
             return float_value(0.0);
@@ -118,80 +190,68 @@ static Value arith(Parser *ps, char op, Value a, Value b, const char *op_at, con
 //   primary := NUMBER | '(' expr ')'
 static Value expr(Parser *ps);
 
-// Tokenizer (AI). An operand is expected here, so every "missing operand" error is reported at
-// this token. A float needs digits on both sides of the '.', so "5." and ".5" fail at the '.'.
+// An operand is expected here, so every "missing operand" error (second operator, "()", end of line,
+// bad character) is reported at the token we are looking at. There is no unary minus, so "-5" fails here.
 static Value primary(Parser *ps) {
-    skip(ps);
-    if (isdigit((unsigned char)*ps->p)) {
-        char *start = ps->p;
-        unsigned long long u = 0;
-        while (isdigit((unsigned char)*ps->p)) u = u * 10 + (unsigned long long)(*ps->p++ - '0');
-        if (ps->p[0] == '.' && isdigit((unsigned char)ps->p[1])) {
-            ps->p++;
-            while (isdigit((unsigned char)*ps->p)) ps->p++;
-            char saved = *ps->p; // strtod needs a '\0' after the number: put one there, no copy
-            *ps->p = '\0';
-            double d = strtod(start, NULL);
-            *ps->p = saved;
-            return float_value(d);
-        }
-        return int_value((long long)u);
-    }
-    if (*ps->p == '(') {
-        ps->p++;
-        Value v = expr(ps);
-        skip(ps);
-        if (!ps->err && *ps->p != ')') fail_at(ps, ps->p);
-        if (!ps->err) ps->p++;
+    if (ps->tok.kind == T_NUM) {
+        Value v = ps->tok.val;
+        next_token(ps);
         return v;
     }
-    fail_at(ps, ps->p);
+    if (ps->tok.kind == T_LP) {
+        next_token(ps);
+        Value v = expr(ps);
+        if (ps->err) return v;
+        if (ps->tok.kind != T_RP) { // missing ')': the token is T_END, so the error is on the '\n'
+            fail_at(ps, ps->tok.start);
+            return v;
+        }
+        next_token(ps);
+        return v;
+    }
+    fail_at(ps, ps->tok.start);
     return int_value(0);
 }
 
 // power() calls itself for the exponent: 2 ** 3 ** 2 is 2 ** (3 ** 2), so ** is right-associative.
 static Value power(Parser *ps) {
     Value a = primary(ps);
-    skip(ps);
-    if (ps->err || ps->p[0] != '*' || ps->p[1] != '*') return a;
-    const char *op_at = ps->p;
-    ps->p += 2;
-    skip(ps);
-    const char *rhs_at = ps->p;
+    if (ps->err || ps->tok.kind != T_POW) return a;
+    const char *op_at = ps->tok.start;
+    next_token(ps);
+    const char *rhs_at = ps->tok.start;
     Value b = power(ps);
     if (ps->err) return int_value(0);
-    return arith(ps, '^', a, b, op_at, rhs_at);
+    return arith(ps, T_POW, a, b, op_at, rhs_at);
 }
 
 // The loops are left-associative: 8 / 2 / 2 is (8 / 2) / 2.
 static Value term(Parser *ps) {
     Value a = power(ps);
-    for (;;) {
-        skip(ps);
-        if (ps->err || (*ps->p != '*' && *ps->p != '/')) return a;
-        const char *op_at = ps->p;
-        char op = *ps->p++;
-        skip(ps);
-        const char *rhs_at = ps->p;
+    while (!ps->err && (ps->tok.kind == T_MUL || ps->tok.kind == T_DIV)) {
+        TokenKind op = ps->tok.kind;
+        const char *op_at = ps->tok.start;
+        next_token(ps);
+        const char *rhs_at = ps->tok.start;
         Value b = power(ps);
         if (ps->err) return int_value(0);
         a = arith(ps, op, a, b, op_at, rhs_at);
     }
+    return a;
 }
 
 static Value expr(Parser *ps) {
     Value a = term(ps);
-    for (;;) {
-        skip(ps);
-        if (ps->err || (*ps->p != '+' && *ps->p != '-')) return a;
-        const char *op_at = ps->p;
-        char op = *ps->p++;
-        skip(ps);
-        const char *rhs_at = ps->p;
+    while (!ps->err && (ps->tok.kind == T_PLUS || ps->tok.kind == T_MINUS)) {
+        TokenKind op = ps->tok.kind;
+        const char *op_at = ps->tok.start;
+        next_token(ps);
+        const char *rhs_at = ps->tok.start;
         Value b = term(ps);
         if (ps->err) return int_value(0);
         a = arith(ps, op, a, b, op_at, rhs_at);
     }
+    return a;
 }
 
 static int make_folder(const char *folder) {
@@ -241,15 +301,26 @@ static int process(const char *inpath, const char *base, const char *outdir) {
     // The array doubles when full, so it is not copied for every result.
     Value *res = NULL;
     size_t count = 0, cap = 0;
-    Parser ps = {buf, buf, 0};
+    Parser ps;
+    ps.text = buf;
+    ps.p = buf;
+    ps.err = 0;
+    ps.tok.kind = T_END;
+    ps.tok.start = buf;
+    ps.tok.val = int_value(0);
     while (*ps.p && !ps.err) {
-        skip(&ps);
-        if (*ps.p == '\n') { ps.p++; continue; }
-        if (*ps.p == '#') { while (*ps.p && *ps.p != '\n') ps.p++; continue; } // only a FIRST '#' is a comment
-        if (*ps.p == '\0') break;
+        next_token(&ps); // first token of the line
+        if (ps.tok.kind == T_END) { // blank line: no output
+            if (*ps.p == '\n') ps.p++;
+            continue;
+        }
+        if (ps.tok.kind == T_HASH) { // '#' as the FIRST token of the line: a comment
+            while (*ps.p && *ps.p != '\n') ps.p++;
+            if (*ps.p == '\n') ps.p++;
+            continue;
+        }
         Value v = expr(&ps);
-        skip(&ps);
-        if (!ps.err && *ps.p != '\n' && *ps.p != '\0') fail_at(&ps, ps.p); // leftover: extra ')', '#', "2 3"
+        if (!ps.err && ps.tok.kind != T_END) fail_at(&ps, ps.tok.start); // leftover: extra ')', '#', "2 3"
         if (ps.err) break;
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 1024;
