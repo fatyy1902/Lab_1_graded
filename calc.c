@@ -3,7 +3,7 @@
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 // Resources used: Chat gpt, conversation history: https://chatgpt.com/share/6adf8bf9-c934-83eb-b22d-9cb6dab864d1; course slides DE0917 (Arrays, Strings & Pointers; Files, Arguments, Directories; Advanced pointers, dynamic memory, structures, preprocessor directives); man pages of mkdir, stat, opendir, snprintf, fseek, strtod, pow
 
-// The tokenizer part (skip() and the reading of numbers and   operators) was written by Claude. I read it and I can explain it.
+// The tokenizer part (skip() and the reading of numbers and   operators) was written by Chqt gpt. I read it and I can explain it.
 
 #include <ctype.h>
 #include <dirent.h>
@@ -41,8 +41,7 @@ typedef struct {
     double d;
 } Value;
 
-// start points to the first character of the token in the file. Errors are reported at start, because
-// the error position is "the start of the token the parser was looking at".
+// start points to the first character of the token in the file. Errors are reported at start
 typedef struct {
     TokenKind kind;
     char *start;
@@ -190,8 +189,7 @@ static Value arith(Parser *ps, TokenKind op, Value a, Value b, const char *op_at
 //   primary := NUMBER | '(' expr ')'
 static Value expr(Parser *ps);
 
-// An operand is expected here, so every "missing operand" error (second operator, "()", end of line,
-// bad character) is reported at the token we are looking at. There is no unary minus, so "-5" fails here.
+// An operand is expected here, so every "missing operand" error (second operator, "()", end of line, bad character) is reported at the token we are looking at. 
 static Value primary(Parser *ps) {
     if (ps->tok.kind == T_NUM) {
         Value v = ps->tok.val;
@@ -202,7 +200,7 @@ static Value primary(Parser *ps) {
         next_token(ps);
         Value v = expr(ps);
         if (ps->err) return v;
-        if (ps->tok.kind != T_RP) { // missing ')': the token is T_END, so the error is on the '\n'
+        if (ps->tok.kind != T_RP) { 
             fail_at(ps, ps->tok.start);
             return v;
         }
@@ -213,7 +211,6 @@ static Value primary(Parser *ps) {
     return int_value(0);
 }
 
-// power() calls itself for the exponent: 2 ** 3 ** 2 is 2 ** (3 ** 2), so ** is right-associative.
 static Value power(Parser *ps) {
     Value a = primary(ps);
     if (ps->err || ps->tok.kind != T_POW) return a;
@@ -225,7 +222,6 @@ static Value power(Parser *ps) {
     return arith(ps, T_POW, a, b, op_at, rhs_at);
 }
 
-// The loops are left-associative: 8 / 2 / 2 is (8 / 2) / 2.
 static Value term(Parser *ps) {
     Value a = power(ps);
     while (!ps->err && (ps->tok.kind == T_MUL || ps->tok.kind == T_DIV)) {
@@ -277,7 +273,7 @@ static int process(const char *inpath, const char *base, const char *outdir) {
         return RES_FAIL;
     }
 
-    // Large files: the file is read once into one buffer and parsed there, with no copy per line.
+    // the file is read once into one buffer and parsed there, with no copy per line.
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     rewind(f);
@@ -297,8 +293,7 @@ static int process(const char *inpath, const char *base, const char *outdir) {
     }
     buf[n] = '\0';
 
-    // Results are kept until the end: after an error only the ERROR line must be written.
-    // The array doubles when full, so it is not copied for every result.
+    // after an error only the ERROR line must be written.
     Value *res = NULL;
     size_t count = 0, cap = 0;
     Parser ps;
